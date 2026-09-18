@@ -1,0 +1,17 @@
+[package]
+name = "tidytrail-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "TidyTrail Desktop: a treemap disk-usage visualizer and cleaner for Windows and Linux."
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tidytrail-core = { path = "../../core" }
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

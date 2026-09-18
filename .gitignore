@@ -1,0 +1,7 @@
+/target/
+node_modules/
+app/src-tauri/gen/
+*.log
+
+# generated icon variants we don't want to re-check-in accidentally
+app/src-tauri/icons/icon-source-1024.png

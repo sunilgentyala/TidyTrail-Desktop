@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TidyTrail Desktop: disk space treemap for Windows and Linux</title>
+<meta name="description" content="TidyTrail Desktop scans a folder or drive and shows what is using space as a squarified treemap, then lets you move the biggest offenders to the trash. Windows and Linux.">
+<link rel="icon" type="image/png" href="assets/favicon-32.png">
+<link rel="apple-touch-icon" href="assets/icon-180.png">
+<style>
+  :root {
+    --blue: #4c72b0;
+    --orange: #dd8452;
+    --ink: #0f172a;
+    --muted: #5b6472;
+    --bg: #ffffff;
+    --panel: #f6f7fb;
+    --border: #e6e8ef;
+    color-scheme: light;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.55;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 0 20px; }
+
+  header.hero {
+    background: linear-gradient(120deg, var(--blue), var(--orange));
+    color: #fff;
+    padding: 64px 0 56px;
+  }
+  header.hero .badge {
+    display: inline-block;
+    font-size: 13px;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    background: rgba(255,255,255,.18);
+    border: 1px solid rgba(255,255,255,.35);
+    padding: 5px 12px;
+    border-radius: 999px;
+    margin-bottom: 18px;
+  }
+  header.hero h1 {
+    font-size: clamp(34px, 6vw, 56px);
+    margin: 0 0 12px;
+    font-weight: 800;
+    letter-spacing: -0.01em;
+  }
+  header.hero p.tagline {
+    font-size: clamp(16px, 2.4vw, 20px);
+    max-width: 640px;
+    margin: 0 0 28px;
+    color: rgba(255,255,255,.92);
+  }
+  .cta-row { display: flex; gap: 12px; flex-wrap: wrap; }
+  .btn {
+    display: inline-block;
+    padding: 11px 20px;
+    border-radius: 8px;
+    font-weight: 600;
+    text-decoration: none;
+    font-size: 14px;
+  }
+  .btn.primary { background: #fff; color: var(--blue); }
+  .btn.ghost { background: rgba(255,255,255,.12); color: #fff; border: 1px solid rgba(255,255,255,.5); }
+
+  section { padding: 56px 0; }
+  h2 { font-size: 28px; margin: 0 0 8px; }
+  p.lead { color: var(--muted); max-width: 640px; margin: 0 0 32px; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 18px; }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+  }
+  .card h3 { margin: 0 0 8px; font-size: 16px; }
+  .card p { margin: 0; color: var(--muted); font-size: 14px; }
+  .swatch-row { display: flex; gap: 6px; margin-bottom: 12px; }
+  .swatch { width: 16px; height: 16px; border-radius: 3px; }
+
+  .platforms { display: flex; gap: 16px; flex-wrap: wrap; }
+  .platform-card {
+    flex: 1;
+    min-width: 220px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+  }
+  .platform-card h3 { margin: 0 0 6px; }
+  .platform-card code { font-size: 13px; background: var(--panel); padding: 2px 6px; border-radius: 4px; }
+
+  pre {
+    background: #0f172a;
+    color: #e7e9ee;
+    padding: 16px 18px;
+    border-radius: 10px;
+    overflow-x: auto;
+    font-size: 13px;
+  }
+
+  footer {
+    border-top: 1px solid var(--border);
+    padding: 28px 0 60px;
+    color: var(--muted);
+    font-size: 13px;
+  }
+  footer a { color: var(--blue); }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap">
+    <span class="badge">Pre-release</span>
+    <h1>See what's eating your disk.</h1>
+    <p class="tagline">TidyTrail Desktop scans a folder or drive and draws it as a squarified
+      treemap, same idea as TreeSize and WinDirStat, then lets you move the
+      biggest offenders straight to the trash. Windows and Linux, one Rust
+      core, no telemetry.</p>
+    <div class="cta-row">
+      <a class="btn primary" href="https://github.com/sunilgentyala/TidyTrail-Desktop/releases">Get the latest build</a>
+      <a class="btn ghost" href="https://github.com/sunilgentyala/TidyTrail-Desktop">View source</a>
+    </div>
+  </div>
+</header>
+
+<section class="wrap">
+  <h2>What it does</h2>
+  <p class="lead">Pick a folder or a whole drive. TidyTrail Desktop scans it, sizes every
+    file and folder, and shows the result two ways.</p>
+  <div class="grid">
+    <div class="card">
+      <h3>Treemap view</h3>
+      <p>Rectangles sized by file/folder size, colored by category. The
+        biggest thing on disk is the biggest thing on screen, so you find it
+        by looking, not scrolling a sorted list.</p>
+    </div>
+    <div class="card">
+      <h3>List view</h3>
+      <p>The same scan as a flat, size-sorted table with a share-of-total
+        bar per row, for when a table beats rectangles.</p>
+    </div>
+    <div class="card">
+      <h3>Drill down</h3>
+      <p>Double-click a folder tile or row to scan into it. A breadcrumb
+        bar tracks where you are and jumps back in one click.</p>
+    </div>
+    <div class="card">
+      <h3>Delete safely</h3>
+      <p>Selected files and folders move to the OS trash or recycle bin,
+        never a hard delete, so a bad click is recoverable.</p>
+    </div>
+  </div>
+</section>
+
+<section class="wrap">
+  <h2>Colored by category</h2>
+  <p class="lead">Every tile's color comes from its file type, so a cluster of the same
+    color reads as "this is all your video files" at a glance.</p>
+  <div class="swatch-row">
+    <span class="swatch" style="background:#4c72b0" title="Folder"></span>
+    <span class="swatch" style="background:#dd8452" title="Archive"></span>
+    <span class="swatch" style="background:#8172b3" title="Audio"></span>
+    <span class="swatch" style="background:#c44e52" title="Video"></span>
+    <span class="swatch" style="background:#55a868" title="Image"></span>
+    <span class="swatch" style="background:#64b5cd" title="Document"></span>
+    <span class="swatch" style="background:#937860" title="Code"></span>
+    <span class="swatch" style="background:#da8bc3" title="Executable"></span>
+    <span class="swatch" style="background:#8c8c8c" title="System"></span>
+    <span class="swatch" style="background:#ccb974" title="Other"></span>
+  </div>
+</section>
+
+<section class="wrap">
+  <h2>Two platforms, one core</h2>
+  <p class="lead">The scanning, treemap layout, and trash-backed deletion logic all live
+    in one Rust library, unit tested on its own and shared by both builds.</p>
+  <div class="platforms">
+    <div class="platform-card">
+      <h3>Windows</h3>
+      <p>Lists every mounted drive letter automatically. Junctions and
+        mount points are treated as zero-size leaves instead of followed,
+        so a self-referential junction (Windows ships several) can't send
+        a scan into an infinite loop.</p>
+      <p><code>.msi</code> / <code>.exe</code> installer</p>
+    </div>
+    <div class="platform-card">
+      <h3>Linux</h3>
+      <p>Lists <code>/</code>, your home directory, and anything mounted
+        under <code>/media</code> or <code>/mnt</code>.</p>
+      <p><code>.deb</code> / <code>.AppImage</code></p>
+    </div>
+  </div>
+</section>
+
+<section class="wrap">
+  <h2>Build it yourself</h2>
+  <p class="lead">No installers published yet; build from source with Rust and Node.</p>
+  <pre>git clone https://github.com/sunilgentyala/TidyTrail-Desktop.git
+cd TidyTrail-Desktop
+cargo test --workspace
+npx @tauri-apps/cli build</pre>
+</section>
+
+<footer class="wrap">
+  <p>TidyTrail Desktop is the Windows/Linux sibling of
+    <a href="https://sunilgentyala.com/TidyTrail">TidyTrail</a> for iOS and
+    Mac. MIT licensed. Built by
+    <a href="https://github.com/sunilgentyala">Sunil Gentyala</a>.</p>
+</footer>
+
+</body>
+</html>

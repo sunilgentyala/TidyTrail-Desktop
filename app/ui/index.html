@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TidyTrail Desktop</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="app">
+    <aside class="sidebar">
+      <div>
+        <h1>TidyTrail Desktop</h1>
+        <p class="subtitle">Find what's using space</p>
+      </div>
+      <button class="browse-button" id="browse-btn" type="button">Choose folder&hellip;</button>
+      <ul class="root-list" id="root-list"></ul>
+      <div class="legend" id="legend"></div>
+    </aside>
+
+    <main class="main">
+      <div class="toolbar">
+        <nav class="breadcrumb" id="breadcrumb"></nav>
+        <button class="toolbar-btn" id="up-btn" type="button" title="Go up one level">Up</button>
+        <button class="toolbar-btn" id="view-toggle-btn" type="button">List view</button>
+        <button class="toolbar-btn" id="rescan-btn" type="button">Rescan</button>
+        <button class="toolbar-btn danger" id="delete-btn" type="button" disabled>Move to Trash</button>
+      </div>
+      <div class="status-bar">
+        <span id="status-text">Pick a folder or drive to scan.</span>
+        <button id="issues-toggle" hidden type="button"></button>
+      </div>
+      <div class="view" id="view">
+        <div class="empty-state" id="empty-state">
+          <strong>No scan yet</strong>
+          <span>Choose a folder or drive on the left to see what's taking up space.</span>
+        </div>
+      </div>
+    </main>
+  </div>
+  <script type="module" src="main.js"></script>
+</body>
+</html>
