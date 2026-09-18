@@ -188,20 +188,26 @@
         mount points are treated as zero-size leaves instead of followed,
         so a self-referential junction (Windows ships several) can't send
         a scan into an infinite loop.</p>
-      <p><code>.msi</code> / <code>.exe</code> installer</p>
+      <p><code>.msi</code> / <code>.exe</code> installer, or a portable
+        <code>.zip</code>, unzip and run, no install.</p>
     </div>
     <div class="platform-card">
       <h3>Linux</h3>
       <p>Lists <code>/</code>, your home directory, and anything mounted
         under <code>/media</code> or <code>/mnt</code>.</p>
-      <p><code>.deb</code> / <code>.AppImage</code></p>
+      <p><code>.deb</code> to install, or a portable <code>.AppImage</code>,
+        <code>chmod +x</code> and run.</p>
     </div>
   </div>
+  <p class="lead" style="margin-top:14px">None of the Windows builds are code-signed yet, so Microsoft Defender
+    SmartScreen will warn you the first time you run one ("Windows protected
+    your PC"). That's standard for any unsigned app, not a sign of a problem:
+    click <strong>More info</strong>, then <strong>Run anyway</strong>.</p>
 </section>
 
 <section class="wrap">
   <h2>Build it yourself</h2>
-  <p class="lead">No installers published yet; build from source with Rust and Node.</p>
+  <p class="lead">Prefer to build from source instead of using a prebuilt release? You'll need Rust and Node.</p>
   <pre>git clone https://github.com/sunilgentyala/TidyTrail-Desktop.git
 cd TidyTrail-Desktop
 cargo test --workspace
