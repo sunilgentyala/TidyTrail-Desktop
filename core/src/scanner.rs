@@ -32,13 +32,29 @@ pub struct ScanResult {
     pub issues: Vec<ScanIssue>,
 }
 
+/// How many entries a scan visits between `on_progress` calls. High enough
+/// that the callback (which on the Tauri side means an IPC event) never
+/// becomes the bottleneck, low enough that a live scan still feels like
+/// it's moving on a folder with thousands of files.
+const PROGRESS_INTERVAL: u64 = 200;
+
 /// Recursively scans `root`, returning a size-sorted tree plus any paths
 /// that could not be read. `is_cancelled` is polled between entries so a
 /// scan of a large volume can be stopped from the UI without waiting for it
-/// to finish.
-pub fn scan(root: &Path, is_cancelled: &dyn Fn() -> bool) -> ScanResult {
+/// to finish. `on_progress` is called every [`PROGRESS_INTERVAL`] entries
+/// with the running total visited, so a long scan can show live progress
+/// instead of sitting on a static "Scanning..." message.
+pub fn scan(root: &Path, is_cancelled: &dyn Fn() -> bool, on_progress: &dyn Fn(u64)) -> ScanResult {
     let mut issues = Vec::new();
-    let node = scan_entry(root, is_cancelled, &mut issues);
+    let mut visited: u64 = 0;
+    let node = scan_entry(
+        root,
+        None,
+        is_cancelled,
+        on_progress,
+        &mut visited,
+        &mut issues,
+    );
     let root_node = node.unwrap_or_else(|| Node {
         name: display_name(root),
         path: root.to_path_buf(),
@@ -52,16 +68,26 @@ pub fn scan(root: &Path, is_cancelled: &dyn Fn() -> bool) -> ScanResult {
     }
 }
 
+/// `known_metadata` lets a caller that already has a `DirEntry` pass its
+/// (already free on Windows, no extra syscall on Unix either way) metadata
+/// straight through instead of this function re-`stat`ing the path itself;
+/// the root call has no `DirEntry` to draw one from, so it passes `None`.
 fn scan_entry(
     path: &Path,
+    known_metadata: Option<fs::Metadata>,
     is_cancelled: &dyn Fn() -> bool,
+    on_progress: &dyn Fn(u64),
+    visited: &mut u64,
     issues: &mut Vec<ScanIssue>,
 ) -> Option<Node> {
     if is_cancelled() {
         return None;
     }
 
-    let metadata = match fs::symlink_metadata(path) {
+    let metadata = match known_metadata
+        .map(Ok)
+        .unwrap_or_else(|| fs::symlink_metadata(path))
+    {
         Ok(m) => m,
         Err(e) => {
             issues.push(ScanIssue {
@@ -71,6 +97,11 @@ fn scan_entry(
             return None;
         }
     };
+
+    *visited += 1;
+    if (*visited).is_multiple_of(PROGRESS_INTERVAL) {
+        on_progress(*visited);
+    }
 
     // Symlinks and (on Windows) junctions/mount points are reported as
     // zero-size leaves rather than followed, so a link that points back up
@@ -135,7 +166,15 @@ fn scan_entry(
                 continue;
             }
         };
-        if let Some(child) = scan_entry(&entry.path(), is_cancelled, issues) {
+        let child_metadata = entry.metadata().ok();
+        if let Some(child) = scan_entry(
+            &entry.path(),
+            child_metadata,
+            is_cancelled,
+            on_progress,
+            visited,
+            issues,
+        ) {
             children.push(child);
         }
     }
@@ -207,7 +246,7 @@ mod windows_junction_tests {
         let link = dir.path().join("self_link");
         make_junction(&link, dir.path());
 
-        let result = scan(dir.path(), &|| false);
+        let result = scan(dir.path(), &|| false, &|_| {});
 
         assert_eq!(
             result.root.size, 100,

@@ -123,6 +123,7 @@ const state = {
   scanning: false,
   selected: new Set(), // selected child paths within the current view
   pendingDelete: null,
+  expandedPaths: new Set(), // directory paths expanded in the folder tree panel
 };
 
 const el = {
@@ -137,6 +138,7 @@ const el = {
   issuesToggle: document.getElementById("issues-toggle"),
   view: document.getElementById("view"),
   browseBtn: document.getElementById("browse-btn"),
+  folderTree: document.getElementById("folder-tree"),
 };
 
 function currentNode() {
@@ -189,17 +191,27 @@ async function scanPath(path) {
   state.selected.clear();
   renderToolbar();
   el.statusText.textContent = `Scanning ${path}…`;
-  el.view.innerHTML = `<div class="scanning-state"><strong>Scanning…</strong><span>${path}</span><button class="toolbar-btn" id="cancel-scan-btn" type="button">Cancel</button></div>`;
+  el.view.innerHTML = `<div class="scanning-state"><strong>Scanning…</strong><span>${path}</span><span id="scan-progress-count" class="scan-progress-count"></span><button class="toolbar-btn" id="cancel-scan-btn" type="button">Cancel</button></div>`;
   document.getElementById("cancel-scan-btn").addEventListener("click", () => {
     invoke("cancel_scan").catch(() => {});
+  });
+
+  const progressEl = document.getElementById("scan-progress-count");
+  const unlisten = await window.__TAURI__.event.listen("scan://progress", (event) => {
+    if (progressEl) {
+      progressEl.textContent = `${event.payload.visited.toLocaleString()} items scanned…`;
+    }
   });
 
   try {
     const result = await invoke("scan_path", { path });
     state.path = [result.root];
     state.issues = result.issues;
+    state.expandedPaths = new Set([result.root.path]);
   } catch (e) {
     el.statusText.textContent = `Could not scan ${path}: ${e}`;
+  } finally {
+    unlisten();
   }
 
   state.scanning = false;
@@ -218,12 +230,44 @@ function drillInto(node) {
   if (!node.is_dir) return;
   state.path.push(node);
   state.selected.clear();
+  expandAncestors(state.path);
   renderAll();
 }
 
 function goToBreadcrumb(index) {
   state.path = state.path.slice(0, index + 1);
   state.selected.clear();
+  expandAncestors(state.path);
+  renderAll();
+}
+
+/** Finds the chain of nodes from `root` down to the node at `targetPath`,
+ * root inclusive. Only descends into directories, since the tree panel only
+ * shows directories. Returns null if targetPath isn't under root. */
+function findChain(root, targetPath) {
+  if (root.path === targetPath) return [root];
+  for (const child of root.children) {
+    if (!child.is_dir) continue;
+    const chain = findChain(child, targetPath);
+    if (chain) return [root, ...chain];
+  }
+  return null;
+}
+
+function expandAncestors(chain) {
+  for (const node of chain) state.expandedPaths.add(node.path);
+}
+
+/** Jumps the main view straight to any folder already in the scanned tree,
+ * the way clicking a node in TreeSize's folder tree does, rather than only
+ * being able to move one level at a time via drill-down/breadcrumb. */
+function navigateToPath(targetPath) {
+  if (state.path.length === 0) return;
+  const chain = findChain(state.path[0], targetPath);
+  if (!chain) return;
+  state.path = chain;
+  state.selected.clear();
+  expandAncestors(chain);
   renderAll();
 }
 
@@ -282,6 +326,73 @@ function renderAll() {
   renderBreadcrumb();
   renderStatusBar();
   renderView();
+  renderFolderTree();
+}
+
+function renderFolderTree() {
+  el.folderTree.innerHTML = "";
+  const root = state.path[0];
+  if (!root) {
+    const empty = document.createElement("div");
+    empty.className = "tree-empty";
+    empty.textContent = "Scan a folder to see its structure here.";
+    el.folderTree.appendChild(empty);
+    return;
+  }
+  renderTreeNode(root, 0, el.folderTree);
+}
+
+function renderTreeNode(node, depth, container) {
+  const isExpanded = state.expandedPaths.has(node.path);
+  const active = currentNode();
+  const isActive = active && active.path === node.path;
+  const dirChildren = node.children.filter((c) => c.is_dir);
+
+  const row = document.createElement("div");
+  row.className = "tree-row" + (isActive ? " active" : "");
+  row.style.paddingLeft = `${4 + depth * 14}px`;
+  row.title = node.path;
+
+  const toggle = document.createElement("span");
+  toggle.className = "tree-toggle";
+  if (dirChildren.length > 0) {
+    toggle.textContent = isExpanded ? "▾" : "▸";
+    toggle.addEventListener("click", (evt) => {
+      evt.stopPropagation();
+      if (isExpanded) {
+        state.expandedPaths.delete(node.path);
+      } else {
+        state.expandedPaths.add(node.path);
+      }
+      renderFolderTree();
+    });
+  }
+  row.appendChild(toggle);
+
+  const icon = document.createElement("span");
+  icon.className = "tree-icon";
+  icon.textContent = "📁";
+  row.appendChild(icon);
+
+  const label = document.createElement("span");
+  label.className = "tree-label";
+  label.textContent = node.name || node.path;
+  row.appendChild(label);
+
+  const size = document.createElement("span");
+  size.className = "tree-size";
+  size.textContent = node.size_label;
+  row.appendChild(size);
+
+  row.addEventListener("click", () => navigateToPath(node.path));
+
+  container.appendChild(row);
+
+  if (isExpanded) {
+    for (const child of dirChildren) {
+      renderTreeNode(child, depth + 1, container);
+    }
+  }
 }
 
 function renderView() {

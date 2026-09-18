@@ -3,8 +3,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use serde::Serialize;
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 use tidytrail_core::{categorize, format_bytes, move_all_to_trash, scan, Node, ScanIssue};
+
+#[derive(Serialize, Clone)]
+pub struct ScanProgress {
+    pub visited: u64,
+}
 
 /// One active-scan cancellation flag, reset at the start of every scan.
 /// A single flag is enough because the UI only ever runs one scan at a
@@ -68,7 +73,11 @@ pub struct RootEntry {
 }
 
 #[tauri::command]
-pub async fn scan_path(state: State<'_, ScanState>, path: String) -> Result<ScanResultDto, String> {
+pub async fn scan_path(
+    app: AppHandle,
+    state: State<'_, ScanState>,
+    path: String,
+) -> Result<ScanResultDto, String> {
     let cancelled = state.cancelled.clone();
     cancelled.store(false, Ordering::SeqCst);
 
@@ -78,7 +87,9 @@ pub async fn scan_path(state: State<'_, ScanState>, path: String) -> Result<Scan
     }
 
     let result = tauri::async_runtime::spawn_blocking(move || {
-        scan(&root, &|| cancelled.load(Ordering::SeqCst))
+        scan(&root, &|| cancelled.load(Ordering::SeqCst), &|visited| {
+            let _ = app.emit("scan://progress", ScanProgress { visited });
+        })
     })
     .await
     .map_err(|e| e.to_string())?;

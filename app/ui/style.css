@@ -41,7 +41,7 @@ html, body {
 
 #app {
   display: grid;
-  grid-template-columns: 220px 1fr;
+  grid-template-columns: 260px 1fr;
   height: 100vh;
 }
 
@@ -95,13 +95,94 @@ html, body {
   border: 1px dashed var(--border);
 }
 
+.section-label {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  margin: 0 0 4px;
+  font-weight: 600;
+}
+
+.tree-section {
+  flex: 1 1 auto;
+  min-height: 80px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.folder-tree {
+  flex: 1;
+  overflow-y: auto;
+  margin: 0 -6px;
+  padding: 2px 6px;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.tree-empty {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  padding: 6px 2px;
+}
+
+.tree-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 4px;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.tree-row:hover {
+  background: var(--hover);
+}
+
+.tree-row.active {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  font-weight: 600;
+}
+
+.tree-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.tree-icon {
+  flex-shrink: 0;
+}
+
+.tree-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.tree-size {
+  margin-left: auto;
+  padding-left: 8px;
+  color: var(--text-muted);
+  font-size: 10.5px;
+  flex-shrink: 0;
+}
+
 .legend {
-  margin-top: auto;
   display: flex;
   flex-direction: column;
   gap: 4px;
   font-size: 11px;
   color: var(--text-muted);
+  flex-shrink: 0;
 }
 
 .legend-row {
@@ -217,6 +298,11 @@ html, body {
   width: 100%;
   height: 100%;
   display: block;
+}
+
+.scan-progress-count {
+  font-size: 11.5px;
+  color: var(--text-muted);
 }
 
 .empty-state, .scanning-state {
