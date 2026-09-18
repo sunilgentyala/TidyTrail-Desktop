@@ -95,12 +95,26 @@ depends on (`libwebkit2gtk-4.1-dev`, `libayatana-appindicator3-dev`,
 `librsvg2-dev`, `libssl-dev` on Debian/Ubuntu) - see
 [`ci.yml`](.github/workflows/ci.yml) for the exact package list.
 
+### Running under WSL
+
+WSLg's virtual GPU doesn't support the hardware compositing path
+WebKitGTK tries by default, which shows up as a window that opens but
+stays blank. If that happens, force software rendering:
+
+```bash
+WEBKIT_DISABLE_COMPOSITING_MODE=1 WEBKIT_DISABLE_DMABUF_RENDERER=1 LIBGL_ALWAYS_SOFTWARE=1 ./target/release/tidytrail-desktop
+```
+
+A real Linux desktop with working GPU drivers shouldn't need this.
+
 ## Status
 
 In development, pre-release. Core scanning/layout/deletion logic is unit
 tested and has been run against real multi-hundred-gigabyte directory trees
-(including Windows junction points) without issue. The UI has not yet been
-through a full manual QA pass on Linux.
+(including Windows junction points) without issue. The UI has been manually
+verified on Windows and, under WSL, confirmed to build, pass its test suite,
+and render correctly on Linux; full interactive QA on a native Linux desktop
+is still outstanding.
 
 ## License
 
