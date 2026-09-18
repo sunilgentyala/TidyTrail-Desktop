@@ -45,3 +45,25 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.platform == 'ubuntu-latest' && '--bundles deb,appimage' || '--bundles msi,nsis' }}
+
+      # The compiled exe already has the whole frontend embedded (verified
+      # by copying just this file to an empty folder and running it), so no
+      # installer is required on Windows: zip it up as a no-install option
+      # alongside the .msi/.exe installers. Linux's .AppImage from the step
+      # above is already the portable format there, so it needs no extra step.
+      - name: Package portable Windows build
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          $dest = "TidyTrail-Desktop-${{ github.ref_name }}-portable-windows-x64"
+          New-Item -ItemType Directory -Path $dest | Out-Null
+          Copy-Item target/release/tidytrail-desktop.exe $dest/
+          Copy-Item README.md $dest/
+          Copy-Item LICENSE $dest/
+          Compress-Archive -Path "$dest/*" -DestinationPath "$dest.zip"
+
+      - name: Upload portable Windows build to release
+        if: matrix.platform == 'windows-latest'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload ${{ github.ref_name }} "TidyTrail-Desktop-${{ github.ref_name }}-portable-windows-x64.zip" --clobber

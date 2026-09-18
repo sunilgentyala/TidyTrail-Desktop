@@ -34,6 +34,17 @@ self-referential junctions (`AppData\Local\Application Data` is one), and
 following them turns a scan into unbounded recursion; `core/src/scanner.rs`
 has a regression test that reproduces exactly that shape.
 
+## Installing
+
+Grab the latest build from the
+[Releases page](https://github.com/sunilgentyala/TidyTrail-Desktop/releases):
+
+| | |
+|---|---|
+| **Windows, installed** | `.msi` or `.exe` (NSIS) - either runs a normal installer and adds a Start Menu entry. |
+| **Windows, portable** | `TidyTrail-Desktop-<version>-portable-windows-x64.zip` - unzip and run `tidytrail-desktop.exe` directly, no install, nothing written outside the folder you unzip it into. Still needs the [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/), which ships pre-installed on Windows 11 and current Windows 10. |
+| **Linux** | `.deb` to install with your package manager, or `.AppImage` - `chmod +x` and run it directly, no install, same portable idea as the Windows zip. |
+
 ## Architecture
 
 - **`core/`** (`tidytrail-core`) - the Rust library with the actual logic:
@@ -55,8 +66,9 @@ has a regression test that reproduces exactly that shape.
 - **`.github/workflows/release.yml`** - on a `v*` tag (or manual dispatch),
   builds installers for both platforms (`.msi`/`.exe` for Windows,
   `.deb`/`.AppImage` for Linux) via
-  [`tauri-action`](https://github.com/tauri-apps/tauri-action) and attaches
-  them to a draft GitHub Release.
+  [`tauri-action`](https://github.com/tauri-apps/tauri-action), zips the raw
+  Windows exe as a portable no-install option, and attaches everything to a
+  draft GitHub Release.
 
 ## Building locally
 
