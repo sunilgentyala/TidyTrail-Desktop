@@ -45,6 +45,15 @@ Grab the latest build from the
 | **Windows, portable** | `TidyTrail-Desktop-<version>-portable-windows-x64.zip` - unzip and run `tidytrail-desktop.exe` directly, no install, nothing written outside the folder you unzip it into. Still needs the [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/), which ships pre-installed on Windows 11 and current Windows 10. |
 | **Linux** | `.deb` to install with your package manager, or `.AppImage` - `chmod +x` and run it directly, no install, same portable idea as the Windows zip. |
 
+### Windows may warn you before it runs
+
+None of the Windows builds are code-signed yet, so Microsoft Defender
+SmartScreen will show **"Windows protected your PC"** the first time you run
+the installer or the portable exe - this is standard for any unsigned app,
+not a sign something's wrong. Click **More info**, then **Run anyway** to
+continue. This goes away once the release is either code-signed or has
+enough download history for SmartScreen to recognize it.
+
 ## Architecture
 
 - **`core/`** (`tidytrail-core`) - the Rust library with the actual logic:
