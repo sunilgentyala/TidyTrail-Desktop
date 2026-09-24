@@ -1,16 +1,20 @@
 version: 2
+# Everything is grouped: at most one PR per ecosystem per week, instead of
+# one PR (and branch) per dependency.
 updates:
   - package-ecosystem: cargo
     directory: /
     schedule:
       interval: weekly
     groups:
-      tauri:
-        patterns: ["tauri*"]
-    open-pull-requests-limit: 5
+      cargo:
+        patterns: ["*"]
 
   # Keeps the SHA-pinned actions in .github/workflows current.
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]

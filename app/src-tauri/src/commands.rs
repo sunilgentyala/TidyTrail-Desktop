@@ -1,14 +1,12 @@
-use std::fs::OpenOptions;
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use tidytrail_core::{
-    categorize, format_bytes, move_to_trash, scan, DeleteGuard, DeleteRejection, Node, ScanIssue,
+    categorize, format_bytes, scan, trash_with_audit, AuditLog, DeleteGuard, DeleteRejection, Node,
+    ScanIssue, AUDIT_LOG_DIR_ENV, AUDIT_LOG_FILE_NAME, MAX_PATHS_PER_REQUEST,
 };
 
 #[derive(Serialize, Clone)]
@@ -159,32 +157,15 @@ pub struct DeleteFailure {
     pub message: String,
 }
 
-/// One line of the deletion audit log (JSON Lines), so an operator can
-/// always answer "what did this tool remove, when, and as whom".
-#[derive(Serialize)]
-struct AuditRecord<'a> {
-    unix_time: u64,
-    user: &'a str,
-    scan_root: &'a str,
-    requested: &'a str,
-    resolved: Option<&'a str>,
-    outcome: &'a str,
-    detail: Option<&'a str>,
-}
-
-/// Upper bound on paths per request, so a runaway or malicious caller can't
-/// hand the backend an unbounded list.
-const MAX_PATHS_PER_DELETE: usize = 10_000;
-
 #[tauri::command]
 pub async fn delete_paths<R: Runtime>(
     app: AppHandle<R>,
     state: State<'_, ScanState>,
     paths: Vec<String>,
 ) -> Result<DeleteOutcome, String> {
-    if paths.len() > MAX_PATHS_PER_DELETE {
+    if paths.len() > MAX_PATHS_PER_REQUEST {
         return Err(format!(
-            "refusing to delete more than {MAX_PATHS_PER_DELETE} items in one request"
+            "refusing to delete more than {MAX_PATHS_PER_REQUEST} items in one request"
         ));
     }
     let guard = state
@@ -196,84 +177,37 @@ pub async fn delete_paths<R: Runtime>(
         .ok_or_else(|| DeleteRejection::NoActiveScan.to_string())?;
 
     // Fail closed: if the audit log can't be opened, nothing is deleted.
-    let log_path = audit_log_path(&app)?;
-    let mut log = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .map_err(|e| format!("cannot open audit log {}: {e}", log_path.display()))?;
+    let dir = audit_log_dir(&app)?;
+    let mut log = AuditLog::open_in(&dir)
+        .map_err(|e| format!("cannot open audit log in {}: {e}", dir.display()))?;
 
-    tauri::async_runtime::spawn_blocking(move || {
-        let user = current_user();
-        let scan_root = guard.scan_root().to_string_lossy().into_owned();
-        let mut deleted = Vec::new();
-        let mut failed = Vec::new();
-
-        for requested in &paths {
-            let (resolved, result) = match guard.authorize(Path::new(requested)) {
-                Ok(resolved) => {
-                    let result = move_to_trash(&resolved);
-                    (Some(resolved), result)
-                }
-                Err(rejection) => (None, Err(format!("refused: {rejection}"))),
-            };
-            let resolved_str = resolved.as_ref().map(|p| p.to_string_lossy().into_owned());
-            let record = AuditRecord {
-                unix_time: SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0),
-                user: &user,
-                scan_root: &scan_root,
-                requested,
-                resolved: resolved_str.as_deref(),
-                outcome: if result.is_ok() { "trashed" } else { "failed" },
-                detail: result.as_ref().err().map(String::as_str),
-            };
-            if let Ok(line) = serde_json::to_string(&record) {
-                let _ = writeln!(log, "{line}");
-            }
-
-            match result {
-                Ok(()) => deleted.push(requested.clone()),
-                Err(message) => failed.push(DeleteFailure {
-                    path: requested.clone(),
-                    message,
-                }),
-            }
-        }
-        let _ = log.flush();
-
-        DeleteOutcome { deleted, failed }
+    let report = tauri::async_runtime::spawn_blocking(move || {
+        trash_with_audit(&guard, &paths, &mut log, false)
     })
     .await
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())??;
+
+    Ok(DeleteOutcome {
+        deleted: report.trashed,
+        failed: report
+            .failed
+            .into_iter()
+            .map(|(path, message)| DeleteFailure { path, message })
+            .collect(),
+    })
 }
 
-/// Overrides where the deletion audit log is written, e.g. a folder a log
-/// shipper already collects from on a managed server.
-const AUDIT_LOG_DIR_ENV: &str = "TIDYTRAIL_AUDIT_LOG_DIR";
-
-fn audit_log_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
-    let dir = match std::env::var_os(AUDIT_LOG_DIR_ENV) {
-        Some(dir) if !dir.is_empty() => PathBuf::from(dir),
-        _ => app.path().app_log_dir().map_err(|e| e.to_string())?,
-    };
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| format!("cannot create log folder {}: {e}", dir.display()))?;
-    Ok(dir.join("deletions.jsonl"))
-}
-
-fn current_user() -> String {
-    std::env::var("USERNAME")
-        .or_else(|_| std::env::var("USER"))
-        .unwrap_or_else(|_| "unknown".to_string())
+fn audit_log_dir<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
+    match std::env::var_os(AUDIT_LOG_DIR_ENV) {
+        Some(dir) if !dir.is_empty() => Ok(PathBuf::from(dir)),
+        _ => app.path().app_log_dir().map_err(|e| e.to_string()),
+    }
 }
 
 /// Where the deletion audit log lives, so the UI can tell the operator.
 #[tauri::command]
 pub fn audit_log_location<R: Runtime>(app: AppHandle<R>) -> Result<String, String> {
-    audit_log_path(&app).map(|p| p.to_string_lossy().into_owned())
+    audit_log_dir(&app).map(|d| d.join(AUDIT_LOG_FILE_NAME).to_string_lossy().into_owned())
 }
 
 #[tauri::command]
@@ -287,7 +221,7 @@ fn list_roots_impl() -> Vec<RootEntry> {
     for c in b'A'..=b'Z' {
         let letter = c as char;
         let path = format!("{letter}:\\");
-        if Path::new(&path).exists() {
+        if std::path::Path::new(&path).exists() {
             roots.push(RootEntry {
                 name: format!("{letter}:\\"),
                 path,
@@ -391,7 +325,7 @@ mod ipc_tests {
             .collect()
     }
 
-    fn p(path: &Path) -> String {
+    fn p(path: &std::path::Path) -> String {
         path.to_string_lossy().into_owned()
     }
 
@@ -464,7 +398,7 @@ mod ipc_tests {
         assert_eq!(lines[3]["outcome"], "trashed");
 
         // Oversized requests are rejected outright.
-        let many: Vec<String> = (0..=MAX_PATHS_PER_DELETE)
+        let many: Vec<String> = (0..=MAX_PATHS_PER_REQUEST)
             .map(|i| format!("/x/{i}"))
             .collect();
         assert!(invoke(&webview, "delete_paths", json!({ "paths": many })).is_err());

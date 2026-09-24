@@ -59,6 +59,18 @@ Get-FileHash .\TidyTrail-Desktop-v0.2.0-portable-windows-x64.zip -Algorithm SHA2
 gh attestation verify .\TidyTrail-Desktop-v0.2.0-portable-windows-x64.zip --repo sunilgentyala/TidyTrail-Desktop
 ```
 
+### Python package (`pip install tidytrail`)
+
+The package calls the same `DeleteGuard` and audit-log code as the app, so
+every control above applies to `Cleaner.trash()` and `tidytrail trash`
+too. On top of that, the CLI refuses to delete without `--yes` when not run
+interactively.
+
+PyPI releases are published only from `python-publish.yml` via PyPI
+Trusted Publishing (OIDC; no API token exists to leak), behind a manual
+approval on the `pypi` environment, and each file gets a signed PEP 740
+attestation tied to the workflow run that built it.
+
 ## Development process
 
 - Every push and PR runs `cargo fmt --check`, `cargo clippy -D warnings`, the
