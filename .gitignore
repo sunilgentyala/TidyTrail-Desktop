@@ -5,3 +5,10 @@ app/src-tauri/gen/
 
 # generated icon variants we don't want to re-check-in accidentally
 app/src-tauri/icons/icon-source-1024.png
+
+# Python package build/test artifacts
+python/.venv/
+python/dist/
+__pycache__/
+*.pyc
+.pytest_cache/

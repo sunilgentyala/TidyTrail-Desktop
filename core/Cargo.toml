@@ -9,6 +9,7 @@ description = "Directory scanning, squarified treemap layout, and trash-backed d
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 trash = "5"
 
 [target.'cfg(target_os = "linux")'.dependencies]

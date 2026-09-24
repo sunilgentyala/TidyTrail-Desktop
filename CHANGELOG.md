@@ -2,7 +2,20 @@
 
 ## 0.2.0 - 2026-09-24
 
-Security and robustness hardening ahead of use on managed servers.
+Security and robustness hardening ahead of use on managed servers, plus a
+Python package for headless use.
+
+### Added
+- **`tidytrail` Python package and CLI** (`python/`): `scan`, `largest`,
+  `Cleaner.check/trash` (with `dry_run`), and `tidytrail scan|trash` for
+  servers without a desktop, cron jobs, and automation. Built on the same
+  core as the app, so the delete policy and audit log are identical. abi3
+  wheels (Python 3.10+) for Windows, Linux x86_64/aarch64 and macOS, tested
+  in CI as installed wheels. Unattended deletes require `--yes`.
+- The audit log and trash logic moved from the Tauri app into
+  `core::trash_with_audit` so the app and the package share one tested
+  implementation; it gained a dry-run mode, and on Unix the log is created
+  owner-readable only (`0600`).
 
 ### Security
 - **Delete requests are now authorized by the backend.** `delete_paths`

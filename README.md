@@ -54,6 +54,19 @@ not a sign something's wrong. Click **More info**, then **Run anyway** to
 continue. This goes away once the release is either code-signed or has
 enough download history for SmartScreen to recognize it.
 
+## Headless servers, scripts and cron: the `tidytrail` Python package
+
+The same Rust core, with the same delete policy and audit log, ships as a
+Python package with a command-line tool for machines without a desktop:
+
+```bash
+pip install tidytrail
+tidytrail scan /var/log --top 20
+tidytrail trash --root /var/log/app --dry-run /var/log/app/old.log.1
+```
+
+See [`python/README.md`](python/README.md) for the CLI and Python API.
+
 ## Using it on servers
 
 TidyTrail Desktop is a GUI app, so it suits Windows Server over RDP or a
@@ -93,6 +106,12 @@ unattended cleanup, use your normal scripted retention jobs instead.
   `delete_paths` re-validates every path against the last scan through
   `core`'s `DeleteGuard` and writes the audit log; the webview is never
   trusted to decide what may be deleted.
+- **`python/`** - the `tidytrail` PyPI package: PyO3 bindings over `core`
+  (`src/lib.rs`), a thin Python layer and CLI (`tidytrail/`), and a pytest
+  suite that runs against the built wheel. Built with
+  [maturin](https://www.maturin.rs/); `python-publish.yml` builds abi3
+  wheels for Windows, Linux and macOS and publishes them with PyPI Trusted
+  Publishing.
 - **`app/ui/`** - the frontend: plain HTML/CSS/JS, no framework or build
   step. The canvas-based treemap re-runs the same squarified algorithm in JS
   (mirroring the tested Rust version, verified to produce identical output)
