@@ -88,3 +88,41 @@ fn on_progress_fires_with_a_running_total() {
         "should not overcount: {calls:?}"
     );
 }
+
+/// A directory tree nested far deeper than any real one (easy for a local
+/// user to create under a shared folder) must not be able to exhaust the
+/// stack; the scanner stops at `MAX_DEPTH` and says so.
+#[test]
+fn stops_descending_past_max_depth_and_reports_it() {
+    use tidytrail_core::MAX_DEPTH;
+
+    let dir = tempdir().unwrap();
+    let mut deepest = dir.path().to_path_buf();
+    for _ in 0..(MAX_DEPTH + 5) {
+        deepest.push("d");
+    }
+    fs::create_dir_all(&deepest).unwrap();
+    fs::write(deepest.join("hidden.bin"), vec![0u8; 42]).unwrap();
+
+    let result = scan(dir.path(), &|| false, &|_| {});
+
+    assert_eq!(
+        result.root.size, 0,
+        "content below the depth cap is not counted"
+    );
+    assert!(result
+        .issues
+        .iter()
+        .any(|i| i.message.contains("nested deeper than")));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn proc_and_sys_are_virtual_filesystems_but_temp_dirs_are_not() {
+    use tidytrail_core::is_virtual_filesystem;
+
+    assert!(is_virtual_filesystem(std::path::Path::new("/proc")));
+    assert!(is_virtual_filesystem(std::path::Path::new("/sys")));
+    let dir = tempdir().unwrap();
+    assert!(!is_virtual_filesystem(dir.path()));
+}

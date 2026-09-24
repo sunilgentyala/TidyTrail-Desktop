@@ -4,12 +4,14 @@
 
 mod byte_format;
 mod category;
+mod delete_guard;
 mod scanner;
 mod trash;
 mod treemap;
 
 pub use byte_format::format_bytes;
 pub use category::{categorize, Category};
-pub use scanner::{scan, Node, ScanIssue, ScanResult};
+pub use delete_guard::{DeleteGuard, DeleteRejection};
+pub use scanner::{is_virtual_filesystem, scan, Node, ScanIssue, ScanResult, MAX_DEPTH};
 pub use trash::{move_all_to_trash, move_to_trash};
 pub use treemap::{squarify, Item, Rect};

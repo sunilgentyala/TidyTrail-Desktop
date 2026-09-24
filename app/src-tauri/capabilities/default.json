@@ -1,11 +1,11 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capabilities for the main TidyTrail Desktop window",
+  "description": "Least-privilege capabilities for the main TidyTrail Desktop window: core IPC/events, the native folder picker, and native message boxes. Nothing else from the dialog plugin (save/ask/confirm) and no shell/opener access.",
   "windows": ["main"],
   "permissions": [
     "core:default",
-    "dialog:default",
-    "opener:default"
+    "dialog:allow-open",
+    "dialog:allow-message"
   ]
 }
