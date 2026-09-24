@@ -50,7 +50,7 @@ proving it was built by this repository's release workflow:
 ```bash
 # Linux / Git Bash
 sha256sum --ignore-missing -c SHA256SUMS-Linux.txt
-gh attestation verify TidyTrail-Desktop_0.2.0_amd64.deb --repo sunilgentyala/TidyTrail-Desktop
+gh attestation verify TidyTrail.Desktop_0.2.0_amd64.deb --repo sunilgentyala/TidyTrail-Desktop
 ```
 
 ```powershell
