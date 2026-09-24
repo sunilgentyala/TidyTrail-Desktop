@@ -1,22 +1,40 @@
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
-use tidytrail_core::{categorize, format_bytes, move_all_to_trash, scan, Node, ScanIssue};
+use tauri::{AppHandle, Emitter, Manager, Runtime, State};
+use tidytrail_core::{
+    categorize, format_bytes, move_to_trash, scan, DeleteGuard, DeleteRejection, Node, ScanIssue,
+};
 
 #[derive(Serialize, Clone)]
 pub struct ScanProgress {
     pub visited: u64,
 }
 
-/// One active-scan cancellation flag, reset at the start of every scan.
-/// A single flag is enough because the UI only ever runs one scan at a
-/// time; starting a new scan implicitly abandons interest in the old one.
+/// What the backend remembers about the most recent scan. The UI only ever
+/// runs one scan at a time, but a user can start a new scan before the old
+/// one finishes, so each scan gets its own cancellation flag and generation
+/// number: starting a scan cancels the previous one, and a superseded scan's
+/// result is discarded instead of overwriting the newer one.
+///
+/// `guard` is set only once a scan completes, and is what `delete_paths`
+/// checks every requested path against - the webview never gets to decide
+/// on its own what may be deleted.
 #[derive(Default)]
 pub struct ScanState {
-    pub cancelled: Arc<AtomicBool>,
+    current: Mutex<ActiveScan>,
+}
+
+#[derive(Default)]
+struct ActiveScan {
+    generation: u64,
+    cancelled: Arc<AtomicBool>,
+    guard: Option<DeleteGuard>,
 }
 
 #[derive(Serialize)]
@@ -73,26 +91,48 @@ pub struct RootEntry {
 }
 
 #[tauri::command]
-pub async fn scan_path(
-    app: AppHandle,
+pub async fn scan_path<R: Runtime>(
+    app: AppHandle<R>,
     state: State<'_, ScanState>,
     path: String,
 ) -> Result<ScanResultDto, String> {
-    let cancelled = state.cancelled.clone();
-    cancelled.store(false, Ordering::SeqCst);
-
-    let root = PathBuf::from(path);
-    if !root.exists() {
-        return Err(format!("{} does not exist", root.display()));
+    let root = PathBuf::from(&path);
+    if !root.is_absolute() {
+        return Err(format!("{} is not an absolute path", root.display()));
+    }
+    if !root.is_dir() {
+        return Err(format!("{} is not a folder that exists", root.display()));
     }
 
+    let (generation, cancelled) = {
+        let mut current = state.current.lock().map_err(|e| e.to_string())?;
+        current.cancelled.store(true, Ordering::SeqCst);
+        current.generation += 1;
+        current.cancelled = Arc::new(AtomicBool::new(false));
+        current.guard = None;
+        (current.generation, current.cancelled.clone())
+    };
+
+    let scan_root = root.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
-        scan(&root, &|| cancelled.load(Ordering::SeqCst), &|visited| {
-            let _ = app.emit("scan://progress", ScanProgress { visited });
-        })
+        scan(
+            &scan_root,
+            &|| cancelled.load(Ordering::SeqCst),
+            &|visited| {
+                let _ = app.emit("scan://progress", ScanProgress { visited });
+            },
+        )
     })
     .await
     .map_err(|e| e.to_string())?;
+
+    {
+        let mut current = state.current.lock().map_err(|e| e.to_string())?;
+        if current.generation != generation {
+            return Err("scan was superseded by a newer scan".to_string());
+        }
+        current.guard = Some(DeleteGuard::new(&root).map_err(|e| e.to_string())?);
+    }
 
     Ok(ScanResultDto {
         root: result.root.into(),
@@ -102,7 +142,9 @@ pub async fn scan_path(
 
 #[tauri::command]
 pub fn cancel_scan(state: State<'_, ScanState>) {
-    state.cancelled.store(true, Ordering::SeqCst);
+    if let Ok(current) = state.current.lock() {
+        current.cancelled.store(true, Ordering::SeqCst);
+    }
 }
 
 #[derive(Serialize)]
@@ -117,32 +159,121 @@ pub struct DeleteFailure {
     pub message: String,
 }
 
-#[tauri::command]
-pub async fn delete_paths(paths: Vec<String>) -> Result<DeleteOutcome, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let path_bufs: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
-        let refs: Vec<&Path> = path_bufs.iter().map(|p| p.as_path()).collect();
-        let failures = move_all_to_trash(refs);
+/// One line of the deletion audit log (JSON Lines), so an operator can
+/// always answer "what did this tool remove, when, and as whom".
+#[derive(Serialize)]
+struct AuditRecord<'a> {
+    unix_time: u64,
+    user: &'a str,
+    scan_root: &'a str,
+    requested: &'a str,
+    resolved: Option<&'a str>,
+    outcome: &'a str,
+    detail: Option<&'a str>,
+}
 
-        let failed_paths: std::collections::HashSet<&Path> =
-            failures.iter().map(|(p, _)| p.as_path()).collect();
-        let deleted = path_bufs
-            .iter()
-            .filter(|p| !failed_paths.contains(p.as_path()))
-            .map(|p| p.to_string_lossy().into_owned())
-            .collect();
-        let failed = failures
-            .into_iter()
-            .map(|(path, message)| DeleteFailure {
-                path: path.to_string_lossy().into_owned(),
-                message,
-            })
-            .collect();
+/// Upper bound on paths per request, so a runaway or malicious caller can't
+/// hand the backend an unbounded list.
+const MAX_PATHS_PER_DELETE: usize = 10_000;
+
+#[tauri::command]
+pub async fn delete_paths<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, ScanState>,
+    paths: Vec<String>,
+) -> Result<DeleteOutcome, String> {
+    if paths.len() > MAX_PATHS_PER_DELETE {
+        return Err(format!(
+            "refusing to delete more than {MAX_PATHS_PER_DELETE} items in one request"
+        ));
+    }
+    let guard = state
+        .current
+        .lock()
+        .map_err(|e| e.to_string())?
+        .guard
+        .clone()
+        .ok_or_else(|| DeleteRejection::NoActiveScan.to_string())?;
+
+    // Fail closed: if the audit log can't be opened, nothing is deleted.
+    let log_path = audit_log_path(&app)?;
+    let mut log = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|e| format!("cannot open audit log {}: {e}", log_path.display()))?;
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let user = current_user();
+        let scan_root = guard.scan_root().to_string_lossy().into_owned();
+        let mut deleted = Vec::new();
+        let mut failed = Vec::new();
+
+        for requested in &paths {
+            let (resolved, result) = match guard.authorize(Path::new(requested)) {
+                Ok(resolved) => {
+                    let result = move_to_trash(&resolved);
+                    (Some(resolved), result)
+                }
+                Err(rejection) => (None, Err(format!("refused: {rejection}"))),
+            };
+            let resolved_str = resolved.as_ref().map(|p| p.to_string_lossy().into_owned());
+            let record = AuditRecord {
+                unix_time: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0),
+                user: &user,
+                scan_root: &scan_root,
+                requested,
+                resolved: resolved_str.as_deref(),
+                outcome: if result.is_ok() { "trashed" } else { "failed" },
+                detail: result.as_ref().err().map(String::as_str),
+            };
+            if let Ok(line) = serde_json::to_string(&record) {
+                let _ = writeln!(log, "{line}");
+            }
+
+            match result {
+                Ok(()) => deleted.push(requested.clone()),
+                Err(message) => failed.push(DeleteFailure {
+                    path: requested.clone(),
+                    message,
+                }),
+            }
+        }
+        let _ = log.flush();
 
         DeleteOutcome { deleted, failed }
     })
     .await
     .map_err(|e| e.to_string())
+}
+
+/// Overrides where the deletion audit log is written, e.g. a folder a log
+/// shipper already collects from on a managed server.
+const AUDIT_LOG_DIR_ENV: &str = "TIDYTRAIL_AUDIT_LOG_DIR";
+
+fn audit_log_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
+    let dir = match std::env::var_os(AUDIT_LOG_DIR_ENV) {
+        Some(dir) if !dir.is_empty() => PathBuf::from(dir),
+        _ => app.path().app_log_dir().map_err(|e| e.to_string())?,
+    };
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("cannot create log folder {}: {e}", dir.display()))?;
+    Ok(dir.join("deletions.jsonl"))
+}
+
+fn current_user() -> String {
+    std::env::var("USERNAME")
+        .or_else(|_| std::env::var("USER"))
+        .unwrap_or_else(|_| "unknown".to_string())
+}
+
+/// Where the deletion audit log lives, so the UI can tell the operator.
+#[tauri::command]
+pub fn audit_log_location<R: Runtime>(app: AppHandle<R>) -> Result<String, String> {
+    audit_log_path(&app).map(|p| p.to_string_lossy().into_owned())
 }
 
 #[tauri::command]
@@ -195,4 +326,157 @@ fn list_roots_impl() -> Vec<RootEntry> {
     }
 
     roots
+}
+
+/// IPC-level tests: these call the real command handlers through Tauri's
+/// mock runtime exactly the way the webview does, including the way script
+/// injected into a compromised webview could, and check that the Rust side
+/// enforces the delete policy on its own.
+#[cfg(test)]
+mod ipc_tests {
+    use super::*;
+    use serde_json::{json, Value};
+    use tauri::test::{get_ipc_response, mock_builder, mock_context, noop_assets, MockRuntime};
+    use tauri::webview::InvokeRequest;
+    use tauri::WebviewWindow;
+
+    fn make_webview() -> (tauri::App<MockRuntime>, WebviewWindow<MockRuntime>) {
+        let app = mock_builder()
+            .manage(ScanState::default())
+            .invoke_handler(tauri::generate_handler![
+                scan_path,
+                delete_paths,
+                cancel_scan
+            ])
+            .build(mock_context(noop_assets()))
+            .expect("mock app");
+        let webview = tauri::WebviewWindowBuilder::new(&app, "main", Default::default())
+            .build()
+            .expect("mock webview");
+        (app, webview)
+    }
+
+    fn invoke(
+        webview: &WebviewWindow<MockRuntime>,
+        cmd: &str,
+        body: Value,
+    ) -> Result<Value, Value> {
+        get_ipc_response(
+            webview,
+            InvokeRequest {
+                cmd: cmd.into(),
+                callback: tauri::ipc::CallbackFn(0),
+                error: tauri::ipc::CallbackFn(1),
+                url: if cfg!(windows) {
+                    "http://tauri.localhost"
+                } else {
+                    "tauri://localhost"
+                }
+                .parse()
+                .unwrap(),
+                body: tauri::ipc::InvokeBody::Json(body),
+                headers: Default::default(),
+                invoke_key: tauri::test::INVOKE_KEY.to_string(),
+            },
+        )
+        .map(|b| b.deserialize::<Value>().unwrap())
+    }
+
+    fn failures(outcome: &Value) -> Vec<String> {
+        outcome["failed"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f["message"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    fn p(path: &Path) -> String {
+        path.to_string_lossy().into_owned()
+    }
+
+    /// One sequential test, because it sets the process-wide audit-log
+    /// environment variable.
+    #[test]
+    fn backend_enforces_delete_policy_and_audits_every_attempt() {
+        let tmp = tempfile::tempdir().unwrap();
+        let logs = tmp.path().join("audit");
+        std::env::set_var(AUDIT_LOG_DIR_ENV, &logs);
+
+        let scanned = tmp.path().join("scanned");
+        let outside = tmp.path().join("outside");
+        std::fs::create_dir_all(scanned.join("sub")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let victim = outside.join("victim.txt");
+        let junk = scanned.join("sub").join("junk.bin");
+        std::fs::write(&victim, b"keep me").unwrap();
+        std::fs::write(&junk, b"junk").unwrap();
+
+        let (_app, webview) = make_webview();
+
+        // Before any scan there is no scope at all: nothing may be deleted.
+        let err = invoke(&webview, "delete_paths", json!({ "paths": [p(&victim)] })).unwrap_err();
+        assert!(
+            err.as_str().unwrap().contains("no folder has been scanned"),
+            "{err}"
+        );
+
+        invoke(&webview, "scan_path", json!({ "path": p(&scanned) })).expect("scan");
+
+        // Outside the scanned folder, `..` traversal, and the scan root
+        // itself are all refused by the backend.
+        let traversal = scanned.join("..").join("outside").join("victim.txt");
+        let outcome = invoke(
+            &webview,
+            "delete_paths",
+            json!({ "paths": [p(&victim), p(&traversal), p(&scanned)] }),
+        )
+        .unwrap();
+        assert!(
+            outcome["deleted"].as_array().unwrap().is_empty(),
+            "{outcome}"
+        );
+        let messages = failures(&outcome);
+        assert!(
+            messages[0].contains("outside the scanned folder"),
+            "{messages:?}"
+        );
+        assert!(messages[1].contains("'..'"), "{messages:?}");
+        assert!(
+            messages[2].contains("scanned folder itself"),
+            "{messages:?}"
+        );
+        assert!(victim.exists(), "a refused path must never be touched");
+
+        // A real file inside the scanned folder is moved to the trash.
+        let outcome = invoke(&webview, "delete_paths", json!({ "paths": [p(&junk)] })).unwrap();
+        assert_eq!(outcome["deleted"], json!([p(&junk)]), "{outcome}");
+        assert!(!junk.exists());
+
+        // Every attempt, refused or not, is in the audit log.
+        let log = std::fs::read_to_string(logs.join("deletions.jsonl")).unwrap();
+        let lines: Vec<Value> = log
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(lines.len(), 4, "{log}");
+        assert_eq!(lines.iter().filter(|l| l["outcome"] == "failed").count(), 3);
+        assert_eq!(lines[3]["outcome"], "trashed");
+
+        // Oversized requests are rejected outright.
+        let many: Vec<String> = (0..=MAX_PATHS_PER_DELETE)
+            .map(|i| format!("/x/{i}"))
+            .collect();
+        assert!(invoke(&webview, "delete_paths", json!({ "paths": many })).is_err());
+
+        std::env::remove_var(AUDIT_LOG_DIR_ENV);
+    }
+
+    #[test]
+    fn scan_rejects_relative_and_missing_paths() {
+        let (_app, webview) = make_webview();
+        assert!(invoke(&webview, "scan_path", json!({ "path": "relative/dir" })).is_err());
+        let missing = std::env::temp_dir().join("tidytrail-definitely-missing-dir");
+        assert!(invoke(&webview, "scan_path", json!({ "path": p(&missing) })).is_err());
+    }
 }

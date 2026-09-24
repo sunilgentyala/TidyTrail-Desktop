@@ -38,66 +38,166 @@ pub struct ScanResult {
 /// it's moving on a folder with thousands of files.
 const PROGRESS_INTERVAL: u64 = 200;
 
+/// Deepest directory nesting the scanner will descend into. Scanning,
+/// converting and serializing the tree are all recursive, so without a cap a
+/// directory tree nested a few thousand levels deep (easy for any local user
+/// to create under a shared folder) could overflow the stack and crash the
+/// app. Real-world trees are nowhere near this deep; anything past the cap
+/// is reported as a scan issue instead of silently dropped.
+pub const MAX_DEPTH: usize = 256;
+
+/// One directory the scanner is part-way through reading.
+struct DirFrame {
+    path: PathBuf,
+    dev: Option<u64>,
+    depth: usize,
+    entries: fs::ReadDir,
+    children: Vec<Node>,
+}
+
+impl DirFrame {
+    fn finish(mut self) -> Node {
+        self.children.sort_by_key(|c| std::cmp::Reverse(c.size));
+        let total: u64 = self.children.iter().map(|c| c.size).sum();
+        Node {
+            name: display_name(&self.path),
+            path: self.path,
+            size: total,
+            is_dir: true,
+            children: self.children,
+        }
+    }
+}
+
+/// What to do with one entry once its metadata is known.
+enum Visit {
+    Leaf(Node),
+    Descend(Box<DirFrame>),
+    Skip,
+}
+
 /// Recursively scans `root`, returning a size-sorted tree plus any paths
 /// that could not be read. `is_cancelled` is polled between entries so a
 /// scan of a large volume can be stopped from the UI without waiting for it
 /// to finish. `on_progress` is called every [`PROGRESS_INTERVAL`] entries
 /// with the running total visited, so a long scan can show live progress
 /// instead of sitting on a static "Scanning..." message.
+///
+/// The walk uses an explicit stack rather than recursion, so no directory
+/// layout, however deep, can overflow the thread's stack. (An earlier
+/// recursive version crashed on a tree only ~260 levels deep in a debug
+/// build.) [`MAX_DEPTH`] still bounds the *result* tree, because converting
+/// and serializing it for the UI is recursive.
 pub fn scan(root: &Path, is_cancelled: &dyn Fn() -> bool, on_progress: &dyn Fn(u64)) -> ScanResult {
     let mut issues = Vec::new();
     let mut visited: u64 = 0;
-    let node = scan_entry(
-        root,
-        None,
-        is_cancelled,
-        on_progress,
-        &mut visited,
-        &mut issues,
-    );
-    let root_node = node.unwrap_or_else(|| Node {
-        name: display_name(root),
-        path: root.to_path_buf(),
-        size: 0,
-        is_dir: true,
-        children: Vec::new(),
-    });
-    ScanResult {
-        root: root_node,
-        issues,
-    }
-}
 
-/// `known_metadata` lets a caller that already has a `DirEntry` pass its
-/// (already free on Windows, no extra syscall on Unix either way) metadata
-/// straight through instead of this function re-`stat`ing the path itself;
-/// the root call has no `DirEntry` to draw one from, so it passes `None`.
-fn scan_entry(
-    path: &Path,
-    known_metadata: Option<fs::Metadata>,
-    is_cancelled: &dyn Fn() -> bool,
-    on_progress: &dyn Fn(u64),
-    visited: &mut u64,
-    issues: &mut Vec<ScanIssue>,
-) -> Option<Node> {
     if is_cancelled() {
-        return None;
+        return ScanResult {
+            root: leaf(root, 0, true),
+            issues,
+        };
     }
 
-    let metadata = match known_metadata
-        .map(Ok)
-        .unwrap_or_else(|| fs::symlink_metadata(path))
-    {
+    let root_metadata = match fs::symlink_metadata(root) {
         Ok(m) => m,
         Err(e) => {
-            issues.push(ScanIssue {
-                path: path.to_path_buf(),
-                message: e.to_string(),
-            });
-            return None;
+            issues.push(issue(root, e.to_string()));
+            return ScanResult {
+                root: leaf(root, 0, true),
+                issues,
+            };
         }
     };
 
+    let mut stack: Vec<DirFrame> = match visit(
+        root,
+        root_metadata,
+        None,
+        0,
+        &mut visited,
+        on_progress,
+        &mut issues,
+    ) {
+        Visit::Descend(frame) => vec![*frame],
+        Visit::Leaf(node) => return ScanResult { root: node, issues },
+        Visit::Skip => {
+            return ScanResult {
+                root: leaf(root, 0, true),
+                issues,
+            }
+        }
+    };
+
+    loop {
+        let cancelled = is_cancelled();
+        let top = stack
+            .last_mut()
+            .expect("stack is never empty inside the loop");
+        let next = if cancelled { None } else { top.entries.next() };
+
+        let Some(entry) = next else {
+            // This directory is done (or the scan was cancelled): fold it
+            // into its parent, or return it if it was the root.
+            let finished = stack.pop().expect("checked above").finish();
+            match stack.last_mut() {
+                Some(parent) => {
+                    parent.children.push(finished);
+                    continue;
+                }
+                None => {
+                    return ScanResult {
+                        root: finished,
+                        issues,
+                    }
+                }
+            }
+        };
+
+        let entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                issues.push(issue(&top.path, e.to_string()));
+                continue;
+            }
+        };
+        let path = entry.path();
+        let metadata = match entry.metadata() {
+            Ok(m) => m,
+            Err(e) => {
+                issues.push(issue(&path, e.to_string()));
+                continue;
+            }
+        };
+        let (parent_dev, depth) = (top.dev, top.depth + 1);
+        match visit(
+            &path,
+            metadata,
+            parent_dev,
+            depth,
+            &mut visited,
+            on_progress,
+            &mut issues,
+        ) {
+            Visit::Leaf(node) => stack.last_mut().expect("non-empty").children.push(node),
+            Visit::Descend(frame) => stack.push(*frame),
+            Visit::Skip => {}
+        }
+    }
+}
+
+/// Classifies one entry: a leaf to record, a directory to descend into, or
+/// something to ignore. Everything that decides *whether* to descend lives
+/// here, so the loop in [`scan`] only manages the stack.
+fn visit(
+    path: &Path,
+    metadata: fs::Metadata,
+    parent_dev: Option<u64>,
+    depth: usize,
+    visited: &mut u64,
+    on_progress: &dyn Fn(u64),
+    issues: &mut Vec<ScanIssue>,
+) -> Visit {
     *visited += 1;
     if (*visited).is_multiple_of(PROGRESS_INTERVAL) {
         on_progress(*visited);
@@ -111,84 +211,129 @@ fn scan_entry(
     // junctions such as `AppData\Local\Application Data` otherwise send the
     // scanner into unbounded recursion.
     if metadata.is_symlink() || is_reparse_point(&metadata) {
-        return Some(Node {
-            name: display_name(path),
-            path: path.to_path_buf(),
-            size: 0,
-            is_dir: false,
-            children: Vec::new(),
-        });
+        return Visit::Leaf(leaf(path, 0, false));
     }
 
     if metadata.is_file() {
-        return Some(Node {
-            name: display_name(path),
-            path: path.to_path_buf(),
-            size: metadata.len(),
-            is_dir: false,
-            children: Vec::new(),
-        });
+        return Visit::Leaf(leaf(path, metadata.len(), false));
     }
 
     if !metadata.is_dir() {
-        return None;
+        return Visit::Skip;
     }
 
-    let entries = match fs::read_dir(path) {
-        Ok(e) => e,
+    // Kernel pseudo-filesystems (/proc, /sys, ...) report sizes that don't
+    // correspond to anything on disk - /proc/kcore alone claims to be
+    // ~128 TB - so a scan of `/` would otherwise be dominated by fake data.
+    // Only checked where a directory sits on a different device than its
+    // parent, i.e. at a mount point, so the common case costs nothing.
+    let dev = device_id(&metadata);
+    if depth > 0 && dev.is_some() && dev != parent_dev && is_virtual_filesystem(path) {
+        issues.push(issue(
+            path,
+            "skipped: kernel virtual filesystem (sizes are not real disk usage)".to_string(),
+        ));
+        return Visit::Leaf(leaf(path, 0, true));
+    }
+
+    if depth >= MAX_DEPTH {
+        issues.push(issue(
+            path,
+            format!("skipped: nested deeper than {MAX_DEPTH} levels"),
+        ));
+        return Visit::Leaf(leaf(path, 0, true));
+    }
+
+    match fs::read_dir(path) {
+        Ok(entries) => Visit::Descend(Box::new(DirFrame {
+            path: path.to_path_buf(),
+            dev,
+            depth,
+            entries,
+            children: Vec::new(),
+        })),
         Err(e) => {
-            issues.push(ScanIssue {
-                path: path.to_path_buf(),
-                message: e.to_string(),
-            });
-            return Some(Node {
-                name: display_name(path),
-                path: path.to_path_buf(),
-                size: 0,
-                is_dir: true,
-                children: Vec::new(),
-            });
-        }
-    };
-
-    let mut children = Vec::new();
-    for entry in entries {
-        if is_cancelled() {
-            break;
-        }
-        let entry = match entry {
-            Ok(e) => e,
-            Err(e) => {
-                issues.push(ScanIssue {
-                    path: path.to_path_buf(),
-                    message: e.to_string(),
-                });
-                continue;
-            }
-        };
-        let child_metadata = entry.metadata().ok();
-        if let Some(child) = scan_entry(
-            &entry.path(),
-            child_metadata,
-            is_cancelled,
-            on_progress,
-            visited,
-            issues,
-        ) {
-            children.push(child);
+            issues.push(issue(path, e.to_string()));
+            Visit::Leaf(leaf(path, 0, true))
         }
     }
+}
 
-    children.sort_by_key(|c| std::cmp::Reverse(c.size));
-    let total: u64 = children.iter().map(|c| c.size).sum();
+fn issue(path: &Path, message: String) -> ScanIssue {
+    ScanIssue {
+        path: path.to_path_buf(),
+        message,
+    }
+}
 
-    Some(Node {
+fn leaf(path: &Path, size: u64, is_dir: bool) -> Node {
+    Node {
         name: display_name(path),
         path: path.to_path_buf(),
-        size: total,
-        is_dir: true,
-        children,
-    })
+        size,
+        is_dir,
+        children: Vec::new(),
+    }
+}
+
+#[cfg(unix)]
+fn device_id(metadata: &fs::Metadata) -> Option<u64> {
+    use std::os::unix::fs::MetadataExt;
+    Some(metadata.dev())
+}
+
+#[cfg(not(unix))]
+fn device_id(_metadata: &fs::Metadata) -> Option<u64> {
+    None
+}
+
+/// True if `path` is on a Linux kernel pseudo-filesystem, identified by its
+/// `statfs` magic number rather than by name, so it also catches e.g. a
+/// container's /proc bind-mounted somewhere unusual.
+#[cfg(target_os = "linux")]
+pub fn is_virtual_filesystem(path: &Path) -> bool {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    const PSEUDO_FS_MAGICS: &[i64] = &[
+        0x9fa0,      // proc
+        0x6265_6572, // sysfs
+        0x1cd1,      // devpts
+        0x6462_6720, // debugfs
+        0x7472_6163, // tracefs
+        0x7363_6673, // securityfs
+        0x0027_e0eb, // cgroup
+        0x6367_7270, // cgroup2
+        0xcafe_4a11, // bpf
+        0x6165_676c, // pstore
+        0x6265_6570, // configfs
+        0x6573_5546, // fusectl
+        0x1980_0202, // mqueue
+        0x4249_4e4d, // binfmt_misc
+        0xde5e_81e4, // efivarfs
+        0xf97c_ff8c, // selinuxfs
+        0x5a3c_69f0, // apparmorfs
+    ];
+
+    let Ok(c_path) = CString::new(path.as_os_str().as_bytes()) else {
+        return false;
+    };
+    // SAFETY: an all-zero `statfs` is a valid value for this plain C struct,
+    // `c_path` is a valid NUL-terminated string, and `buf` is a properly
+    // sized, writable `statfs` for the call to fill in.
+    let mut buf: libc::statfs = unsafe { std::mem::zeroed() };
+    let rc = unsafe { libc::statfs(c_path.as_ptr(), &mut buf) };
+    if rc != 0 {
+        return false;
+    }
+    #[allow(clippy::unnecessary_cast)]
+    let magic = buf.f_type as i64;
+    PSEUDO_FS_MAGICS.contains(&magic)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn is_virtual_filesystem(_path: &Path) -> bool {
+    false
 }
 
 #[cfg(windows)]

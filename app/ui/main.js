@@ -186,36 +186,63 @@ function renderLegend() {
   }
 }
 
+/** Builds an element with text content only. File and folder names come
+ * straight from disk and anyone who can create a file in a scanned folder
+ * controls them, so they must never reach innerHTML. */
+function textEl(tag, text, className) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  node.textContent = text;
+  return node;
+}
+
+let scanToken = 0;
+
 async function scanPath(path) {
+  const token = ++scanToken;
   state.scanning = true;
   state.selected.clear();
   renderToolbar();
   el.statusText.textContent = `Scanning ${path}…`;
-  el.view.innerHTML = `<div class="scanning-state"><strong>Scanning…</strong><span>${path}</span><span id="scan-progress-count" class="scan-progress-count"></span><button class="toolbar-btn" id="cancel-scan-btn" type="button">Cancel</button></div>`;
-  document.getElementById("cancel-scan-btn").addEventListener("click", () => {
+
+  const scanningState = document.createElement("div");
+  scanningState.className = "scanning-state";
+  scanningState.appendChild(textEl("strong", "Scanning…"));
+  scanningState.appendChild(textEl("span", path));
+  const progressEl = textEl("span", "", "scan-progress-count");
+  scanningState.appendChild(progressEl);
+  const cancelBtn = textEl("button", "Cancel", "toolbar-btn");
+  cancelBtn.type = "button";
+  cancelBtn.addEventListener("click", () => {
     invoke("cancel_scan").catch(() => {});
   });
+  scanningState.appendChild(cancelBtn);
+  el.view.replaceChildren(scanningState);
 
-  const progressEl = document.getElementById("scan-progress-count");
   const unlisten = await window.__TAURI__.event.listen("scan://progress", (event) => {
-    if (progressEl) {
+    if (token === scanToken) {
       progressEl.textContent = `${event.payload.visited.toLocaleString()} items scanned…`;
     }
   });
 
+  let error = null;
   try {
     const result = await invoke("scan_path", { path });
+    if (token !== scanToken) return; // a newer scan has started; drop this one
     state.path = [result.root];
     state.issues = result.issues;
     state.expandedPaths = new Set([result.root.path]);
   } catch (e) {
-    el.statusText.textContent = `Could not scan ${path}: ${e}`;
+    if (token !== scanToken) return;
+    error = e;
   } finally {
     unlisten();
   }
 
   state.scanning = false;
   renderAll();
+  // After renderAll(), which would otherwise overwrite the message.
+  if (error !== null) el.statusText.textContent = `Could not scan ${path}: ${error}`;
 }
 
 function goUp() {
@@ -395,7 +422,17 @@ function renderTreeNode(node, depth, container) {
   }
 }
 
+/** The treemap's resize observer. Replaced on every render, so the old one
+ * must be disconnected or each re-render leaks another observer that keeps
+ * redrawing a canvas that's no longer on screen. */
+let treemapObserver = null;
+
 function renderView() {
+  if (treemapObserver) {
+    treemapObserver.disconnect();
+    treemapObserver = null;
+  }
+  hideTooltip();
   const node = currentNode();
   if (!node) {
     el.view.innerHTML = `<div class="empty-state"><strong>No scan yet</strong><span>Choose a folder or drive on the left to see what's taking up space.</span></div>`;
@@ -500,8 +537,8 @@ function renderTreemapView(node) {
   });
   canvas.addEventListener("mouseleave", hideTooltip);
 
-  const observer = new ResizeObserver(() => draw());
-  observer.observe(el.view);
+  treemapObserver = new ResizeObserver(() => draw());
+  treemapObserver.observe(el.view);
   draw();
 }
 
@@ -511,7 +548,11 @@ function showTooltip(evt, data) {
     hoverTooltipEl.className = "tooltip";
     document.body.appendChild(hoverTooltipEl);
   }
-  hoverTooltipEl.innerHTML = `<strong>${data.name}</strong><br>${data.size_label} · ${CATEGORY_LABELS[data.category] || "Other"}`;
+  hoverTooltipEl.replaceChildren(
+    textEl("strong", data.name),
+    document.createElement("br"),
+    document.createTextNode(`${data.size_label} · ${CATEGORY_LABELS[data.category] || "Other"}`),
+  );
   hoverTooltipEl.style.left = `${evt.clientX + 14}px`;
   hoverTooltipEl.style.top = `${evt.clientY + 14}px`;
   hoverTooltipEl.style.display = "block";
@@ -600,50 +641,92 @@ function toggleSelected(path) {
   renderView();
 }
 
+/** How many of the selected paths the confirm dialog lists by name before
+ * summarizing the rest as "and N more". */
+const CONFIRM_LIST_LIMIT = 8;
+
 function requestDelete() {
   const nodes = selectedNodes();
   if (nodes.length === 0) return;
   state.pendingDelete = nodes;
   const totalSize = nodes.reduce((s, n) => s + n.size, 0);
+
+  // Built with DOM APIs, never innerHTML: the list shows full paths, and
+  // path names are controlled by whoever created the files.
   const panel = document.createElement("div");
   panel.className = "confirm-panel";
-  panel.innerHTML = `
-    <div class="confirm-box">
-      <h2>Move to Trash?</h2>
-      <p>${nodes.length} item${nodes.length === 1 ? "" : "s"} (${formatBytes(totalSize)}) will be moved to the system trash/recycle bin, not permanently deleted.</p>
-      <div class="confirm-actions">
-        <button class="toolbar-btn" id="cancel-delete-btn" type="button">Cancel</button>
-        <button class="toolbar-btn danger" id="confirm-delete-btn" type="button">Move to Trash</button>
-      </div>
-    </div>`;
+  const box = document.createElement("div");
+  box.className = "confirm-box";
+  box.appendChild(textEl("h2", "Move to Trash?"));
+  box.appendChild(
+    textEl(
+      "p",
+      `${nodes.length} item${nodes.length === 1 ? "" : "s"} (${formatBytes(totalSize)}) will be moved to the system trash/recycle bin, not permanently deleted. Every deletion is recorded in the audit log.`,
+    ),
+  );
+
+  const list = document.createElement("ul");
+  list.className = "confirm-list";
+  for (const n of nodes.slice(0, CONFIRM_LIST_LIMIT)) {
+    list.appendChild(textEl("li", `${n.path} (${n.size_label})`));
+  }
+  if (nodes.length > CONFIRM_LIST_LIMIT) {
+    list.appendChild(textEl("li", `…and ${nodes.length - CONFIRM_LIST_LIMIT} more`));
+  }
+  box.appendChild(list);
+
+  const actions = document.createElement("div");
+  actions.className = "confirm-actions";
+  const cancelBtn = textEl("button", "Cancel", "toolbar-btn");
+  cancelBtn.type = "button";
+  const confirmBtn = textEl("button", "Move to Trash", "toolbar-btn danger");
+  confirmBtn.type = "button";
+  actions.append(cancelBtn, confirmBtn);
+  box.appendChild(actions);
+  panel.appendChild(box);
   el.view.appendChild(panel);
-  document.getElementById("cancel-delete-btn").addEventListener("click", () => panel.remove());
-  document.getElementById("confirm-delete-btn").addEventListener("click", () => {
+
+  cancelBtn.addEventListener("click", () => panel.remove());
+  confirmBtn.addEventListener("click", () => {
     panel.remove();
     performDelete(nodes);
   });
+  cancelBtn.focus(); // the safe choice is the default one
 }
 
 async function performDelete(nodes) {
   const paths = nodes.map((n) => n.path);
   el.statusText.textContent = `Moving ${paths.length} item${paths.length === 1 ? "" : "s"} to trash…`;
+  let outcome;
   try {
-    const outcome = await invoke("delete_paths", { paths });
-    const node = currentNode();
-    if (node) {
-      const deletedSet = new Set(outcome.deleted);
-      node.children = node.children.filter((c) => !deletedSet.has(c.path));
-      node.size = node.children.reduce((s, c) => s + c.size, 0);
-    }
-    state.selected.clear();
-    if (outcome.failed.length > 0) {
-      el.statusText.textContent = `Deleted ${outcome.deleted.length}, failed ${outcome.failed.length}: ${outcome.failed
-        .map((f) => f.message)
-        .join("; ")}`;
-    }
-    renderAll();
+    outcome = await invoke("delete_paths", { paths });
   } catch (e) {
     el.statusText.textContent = `Delete failed: ${e}`;
+    return;
+  }
+
+  const node = currentNode();
+  if (node) {
+    const deletedSet = new Set(outcome.deleted);
+    const removed = node.children.filter((c) => deletedSet.has(c.path));
+    const removedBytes = removed.reduce((s, c) => s + c.size, 0);
+    node.children = node.children.filter((c) => !deletedSet.has(c.path));
+    // Every folder on the path from the scan root down to here shrank by
+    // the same amount, not just the one being viewed.
+    for (const ancestor of state.path) {
+      ancestor.size = Math.max(ancestor.size - removedBytes, 0);
+      ancestor.size_label = formatBytes(ancestor.size);
+    }
+  }
+  state.selected.clear();
+  renderAll();
+
+  // Set after renderAll(), which rewrites the status bar: otherwise a
+  // partial failure would be silently replaced by the normal summary.
+  if (outcome.failed.length > 0) {
+    el.statusText.textContent = `Moved ${outcome.deleted.length} to trash, ${outcome.failed.length} failed: ${outcome.failed
+      .map((f) => `${f.path}: ${f.message}`)
+      .join("; ")}`;
   }
 }
 

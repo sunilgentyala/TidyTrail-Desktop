@@ -6,6 +6,14 @@ on:
   pull_request:
     branches: [main]
 
+# Read-only token by default; no job here needs to write anything.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     strategy:
@@ -14,7 +22,9 @@ jobs:
         os: [windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Install Linux system dependencies
         if: matrix.os == 'ubuntu-latest'
@@ -23,13 +33,36 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
 
       - name: Cache cargo registry and build
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy (warnings are errors)
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: cargo test (workspace)
         run: cargo test --workspace --locked
 
-      - name: cargo check (tauri app, no bundling)
-        run: cargo check -p tidytrail-desktop
+      - name: Frontend syntax check
+        run: node --check app/ui/main.js
+
+  supply-chain:
+    name: Dependency audit (cargo-deny)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      # Fails on any RustSec vulnerability advisory, a non-permissive
+      # license, or a dependency from outside crates.io. Policy: deny.toml.
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check advisories bans licenses sources

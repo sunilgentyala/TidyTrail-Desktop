@@ -54,6 +54,31 @@ not a sign something's wrong. Click **More info**, then **Run anyway** to
 continue. This goes away once the release is either code-signed or has
 enough download history for SmartScreen to recognize it.
 
+## Using it on servers
+
+TidyTrail Desktop is a GUI app, so it suits Windows Server over RDP or a
+Linux machine with a desktop session. It is not a headless tool; for
+unattended cleanup, use your normal scripted retention jobs instead.
+
+- **The trash doesn't free space yet.** Moved items still take up disk space
+  in the Recycle Bin / `~/.local/share/Trash` until it's emptied. That keeps
+  mistakes recoverable, but on a full disk you'll have to empty the trash
+  (after checking it) to actually get the space back.
+- **Run as the least-privileged account that can see the data.** The
+  backend refuses to trash OS directories, volume roots, profile roots and
+  anything outside the scanned folder (see [SECURITY.md](SECURITY.md)), but
+  as root/Administrator it can still trash any application's data under the
+  folder you scanned.
+- **Every delete attempt is audited** to `deletions.jsonl` in the app's log
+  folder (`%LOCALAPPDATA%\com.sunilgentyala.tidytrail-desktop\logs` on
+  Windows, `~/.local/share/com.sunilgentyala.tidytrail-desktop/logs` on
+  Linux). Set `TIDYTRAIL_AUDIT_LOG_DIR` to write it somewhere your log
+  shipper already collects. If the log can't be written, nothing is deleted.
+- **Verify what you install.** Check the release's SHA-256 checksums and
+  build-provenance attestation before installing (steps in
+  [SECURITY.md](SECURITY.md#verifying-a-release-download)); builds aren't
+  code-signed yet.
+
 ## Architecture
 
 - **`core/`** (`tidytrail-core`) - the Rust library with the actual logic:
@@ -64,20 +89,27 @@ enough download history for SmartScreen to recognize it.
   (`cargo test -p tidytrail-core`) independent of Tauri or a display.
 - **`app/src-tauri/`** - the Tauri 2 application shell: exposes `core` as a
   handful of commands (`scan_path`, `cancel_scan`, `delete_paths`,
-  `list_roots`) over Tauri's IPC bridge.
+  `list_roots`, `audit_log_location`) over Tauri's IPC bridge.
+  `delete_paths` re-validates every path against the last scan through
+  `core`'s `DeleteGuard` and writes the audit log; the webview is never
+  trusted to decide what may be deleted.
 - **`app/ui/`** - the frontend: plain HTML/CSS/JS, no framework or build
   step. The canvas-based treemap re-runs the same squarified algorithm in JS
   (mirroring the tested Rust version, verified to produce identical output)
   so resizing and drilling down stay instant without an IPC round trip per
   frame.
-- **`.github/workflows/ci.yml`** - runs `cargo test --workspace` on both
-  `windows-latest` and `ubuntu-latest` on every push/PR.
+- **`.github/workflows/ci.yml`** - on every push/PR: `cargo fmt --check`,
+  `cargo clippy -D warnings`, and `cargo test --workspace` on both
+  `windows-latest` and `ubuntu-latest`, plus `cargo deny` for RustSec
+  advisories, licenses and sources (`deny.toml`). `codeql.yml` runs CodeQL
+  over the Rust, JavaScript and workflow code.
 - **`.github/workflows/release.yml`** - on a `v*` tag (or manual dispatch),
   builds installers for both platforms (`.msi`/`.exe` for Windows,
   `.deb`/`.AppImage` for Linux) via
   [`tauri-action`](https://github.com/tauri-apps/tauri-action), zips the raw
   Windows exe as a portable no-install option, and attaches everything to a
-  draft GitHub Release.
+  draft GitHub Release along with SHA-256 checksums and a signed
+  build-provenance attestation for every file.
 
 ## Building locally
 
