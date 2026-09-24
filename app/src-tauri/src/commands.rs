@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -221,7 +221,7 @@ fn list_roots_impl() -> Vec<RootEntry> {
     for c in b'A'..=b'Z' {
         let letter = c as char;
         let path = format!("{letter}:\\");
-        if Path::new(&path).exists() {
+        if std::path::Path::new(&path).exists() {
             roots.push(RootEntry {
                 name: format!("{letter}:\\"),
                 path,
@@ -325,7 +325,7 @@ mod ipc_tests {
             .collect()
     }
 
-    fn p(path: &Path) -> String {
+    fn p(path: &std::path::Path) -> String {
         path.to_string_lossy().into_owned()
     }
 
