@@ -85,6 +85,20 @@ jobs:
           cp target/release/bundle/deb/*.deb dist/
           cp target/release/bundle/appimage/*.AppImage dist/
 
+      # GitHub replaces spaces in uploaded asset names with dots
+      # ("TidyTrail Desktop_0.2.0.msi" is published as
+      # "TidyTrail.Desktop_0.2.0.msi"). Rename first so the checksum file and
+      # the attestation subjects use the names people actually download;
+      # otherwise `sha256sum -c` can't find the files (this happened in v0.2.0).
+      - name: Match GitHub release asset names
+        shell: bash
+        run: |
+          for f in dist/*; do
+            renamed="${f// /.}"
+            if [ "$f" != "$renamed" ]; then mv "$f" "$renamed"; fi
+          done
+          ls dist
+
       # SHA-256 checksums so anyone installing on a server can verify the
       # download before running it (see SECURITY.md for the steps).
       - name: Generate SHA256SUMS
