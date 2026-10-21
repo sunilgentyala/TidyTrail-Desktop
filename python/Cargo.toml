@@ -13,4 +13,4 @@ crate-type = ["cdylib"]
 
 [dependencies]
 tidytrail-core = { path = "../core" }
-pyo3 = { version = "0.29", features = ["abi3-py310"] }
+pyo3 = { version = "0.30", features = ["abi3-py310"] }
