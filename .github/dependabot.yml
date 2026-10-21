@@ -1,11 +1,12 @@
 version: 2
-# Everything is grouped: at most one PR per ecosystem per week, instead of
+# Everything is grouped: at most one PR per ecosystem per month, instead of
 # one PR (and branch) per dependency.
 updates:
   - package-ecosystem: cargo
     directory: /
     schedule:
-      interval: weekly
+      interval: monthly
+    open-pull-requests-limit: 2
     groups:
       cargo:
         patterns: ["*"]
@@ -14,7 +15,8 @@ updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: weekly
+      interval: monthly
+    open-pull-requests-limit: 2
     groups:
       github-actions:
         patterns: ["*"]
